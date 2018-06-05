@@ -1,0 +1,16 @@
+[[source]]
+url = "https://pypi.org/simple"
+verify_ssl = true
+name = "pypi"
+
+[packages]
+numpy = "*"
+h5py = "*"
+astropy = "*"
+pyemf = {path = "/home/korzh/Python/other_sources/_requirements/pyemf"}
+iminuit = "*"
+
+[dev-packages]
+
+[requires]
+python_version = "3.6"
