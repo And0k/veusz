@@ -31,9 +31,6 @@
 #include "fragment.h"
 #include "bsp.h"
 
-// gamma value used in calculating brightness for lighting
-#define GAMMA 2.2
-
 namespace
 {
   // Make scaling matrix to move points to correct output range
@@ -89,20 +86,46 @@ namespace
       scaleM3(scaling);
   }
 
-  // convert (x,y,depth) -> screen coordinates
-  QPointF vecToScreen(const Mat3& screenM, const Vec3& vec)
-  {
-    Vec3 mult(screenM*Vec3(vec(0), vec(1), 1));
-    double inv = 1/mult(2);
-    return QPointF(mult(0)*inv, mult(1)*inv);
-  }
-
   template<class T> T clip(const T& val, const T& minval, const T& maxval)
   {
     return std::min(std::max(val, minval), maxval);
   }
 
   unsigned init_fragments_size = 512;
+
+  // This is a bit of a hack to avoid problems with the painter's
+  // algorithm. This idea is to just break up lines with a length over
+  // the maximum into pieces smaller than maxlen.
+  void breakLongLines(FragmentVector& fragments, double maxlen)
+  {
+    const double maxlen2 = maxlen*maxlen;
+    const int size = fragments.size();
+    for(int ifrag=0; ifrag<size; ++ifrag)
+      {
+        Fragment& f=fragments[ifrag];
+        if(f.type == Fragment::FR_LINESEG)
+          {
+            const double len2 = (f.points[1]-f.points[0]).rad2();
+            if(len2 > maxlen2)
+              {
+                const int nbits = int(std::sqrt(len2/maxlen2))+1;
+                const Vec3 delta = (f.points[1]-f.points[0])*(1./nbits);
+
+                // set original to be first segment
+                f.points[1] = f.points[0]+delta;
+
+                // add nbits-1 copies for next segments
+                Fragment tempf(f);
+                for(int ic=1; ic<nbits; ++ic)
+                  {
+                    tempf.points[0] = tempf.points[1];
+                    tempf.points[1] += delta;
+                    fragments.push_back(tempf);
+                  }
+              }
+          }
+      }
+  }
 
 }; // namespace
 
@@ -124,7 +147,7 @@ QPen Scene::lineProp2QPen(const Fragment& frag, double linescale) const
 
   QColor col;
   if(frag.usecalccolor)
-    col = QColor::fromRgb(frag.calccolor);
+    col = QColor::fromRgba(frag.calccolor);
   else
     col = p->color(frag.index);
 
@@ -228,7 +251,11 @@ void Scene::doDrawing(QPainter* painter, const Mat3& screenM, double linescale,
 
       // convert projected points to screen
       for(unsigned pi=0, s=frag.nPointsTotal(); pi<s; ++pi)
-	projpts[pi] = vecToScreen(screenM, frag.proj[pi]);
+        {
+          Vec2 p = projVecToScreen(screenM, frag.proj[pi]);
+          projpts[pi].setX(p(0));
+          projpts[pi].setY(p(1));
+        }
 
       switch(frag.type)
 	{
@@ -265,7 +292,8 @@ void Scene::doDrawing(QPainter* painter, const Mat3& screenM, double linescale,
                   lsurf = 0;
                 }
               if(ltype != frag.type || lline != frag.lineprop ||
-                 ((frag.lineprop!=0 && frag.lineprop->hasRGBs())))
+                 (frag.lineprop!=0 && (frag.lineprop->hasRGBs() ||
+                                       frag.usecalccolor)))
                 {
                   lline = frag.lineprop;
                   painter->setPen(lineProp2QPen(frag, linescale));
@@ -309,6 +337,98 @@ void Scene::doDrawing(QPainter* painter, const Mat3& screenM, double linescale,
     }
 }
 
+void Scene::calcLightingTriangle(Fragment& frag)
+{
+  // Calculate triangle norm. Make sure norm points towards
+  // the viewer @ (0,0,0)
+  Vec3 tripos = (frag.points[0] + frag.points[1] +
+                 frag.points[2]) * (1./3.);
+  Vec3 norm = cross(frag.points[1] - frag.points[0],
+                    frag.points[2] - frag.points[0]);
+  if(dot(tripos, norm)<0)
+    norm = -norm;
+  norm.normalise();
+
+  // get color of surface
+  const SurfaceProp* prop = frag.surfaceprop;
+  if(prop->refl==0.)
+    return;
+
+  double r, g, b, a;
+  if(prop->hasRGBs())
+    {
+      QRgb rgb = prop->
+        rgbs[std::min(frag.index, unsigned(prop->rgbs.size())-1)];
+      r=qRed(rgb)*(1./255.); g=qGreen(rgb)*(1./255.);
+      b=qBlue(rgb)*(1./255.); a=qAlpha(rgb)*(1./255.);
+    }
+  else
+    {
+      r=prop->r; g=prop->g; b=prop->b; a=1-prop->trans;
+    }
+
+  // add lighting contributions
+  for(auto const& light : lights)
+    {
+      // Now dot vector from light source to triangle with norm
+      Vec3 light2tri = tripos-light.posn;
+      light2tri.normalise();
+
+      // add new lighting index
+      double dotprod = std::max(0., dot(light2tri, norm));
+
+      double delta = prop->refl * dotprod;
+      r += delta*light.r; g += delta*light.g; b += delta*light.b;
+    }
+
+  frag.calccolor = qRgba( clip(int(r*255), 0, 255),
+                          clip(int(g*255), 0, 255),
+                          clip(int(b*255), 0, 255),
+                          clip(int(a*255), 0, 255) );
+  frag.usecalccolor = 1;
+}
+
+void Scene::calcLightingLine(Fragment& frag)
+{
+  const LineProp* prop = frag.lineprop;
+  if(prop->refl==0.)
+    return;
+
+  double r, g, b, a;
+  if(prop->hasRGBs())
+    {
+      QRgb rgb = prop->
+        rgbs[std::min(frag.index, unsigned(prop->rgbs.size())-1)];
+      r=qRed(rgb)*(1./255.); g=qGreen(rgb)*(1./255.);
+      b=qBlue(rgb)*(1./255.); a=qAlpha(rgb)*(1./255.);
+    }
+  else
+    {
+      r=prop->r; g=prop->g; b=prop->b; a=1-prop->trans;
+    }
+
+  Vec3 pmid = (frag.points[0]+frag.points[1])*0.5;
+  Vec3 linevec(frag.points[1]-frag.points[0]);
+  linevec.normalise();
+
+  // add lighting contributions
+  for(auto const& light : lights)
+    {
+      Vec3 light_to_pmid(light.posn-pmid);
+      light_to_pmid.normalise();
+      // this is sin of angle between line segment and light
+      double sintheta = cross(linevec, light_to_pmid).rad();
+      double delta = prop->refl * sintheta;
+      r += delta*light.r; g += delta*light.g; b += delta*light.b;
+    }
+
+  frag.calccolor = qRgba( clip(int(r*255), 0, 255),
+                          clip(int(g*255), 0, 255),
+                          clip(int(b*255), 0, 255),
+                          clip(int(a*255), 0, 255) );
+  frag.usecalccolor = 1;
+}
+
 void Scene::calcLighting()
 {
   // lighting is full on
@@ -317,53 +437,18 @@ void Scene::calcLighting()
 
   for(auto &frag : fragments)
     {
-      if(frag.type == Fragment::FR_TRIANGLE && frag.surfaceprop != 0)
+      switch(frag.type)
         {
-          // Calculate triangle norm. Make sure norm points towards
-          // the viewer @ (0,0,0)
-          Vec3 tripos = (frag.points[0] + frag.points[1] +
-                         frag.points[2]) * (1./3.);
-          Vec3 norm = cross(frag.points[1] - frag.points[0],
-                            frag.points[2] - frag.points[0]);
-          if(dot(tripos, norm)<0)
-            norm = -norm;
-          norm.normalise();
-
-          // get color of surface
-          const SurfaceProp* prop = frag.surfaceprop;
-          double r, g, b, a;
-
-          if(prop->hasRGBs())
-            {
-              QRgb rgb = prop->
-                rgbs[std::min(frag.index, unsigned(prop->rgbs.size())-1)];
-              r=qRed(rgb)*(1./255.); g=qGreen(rgb)*(1./255.);
-              b=qBlue(rgb)*(1./255.); a=qAlpha(rgb)*(1./255.);
-            }
-          else
-            {
-              r=prop->r; g=prop->g; b=prop->b; a=1-prop->trans;
-            }
-
-          // add lighting contributions
-          for(auto const& light : lights)
-            {
-              // Now dot vector from light source to triangle with norm
-              Vec3 light2tri = tripos-light.posn;
-              light2tri.normalise();
-
-              // add new lighting index
-              double dotprod = std::max(0., dot(light2tri, norm));
-
-              double delta = prop->refl * dotprod;
-              r += delta*light.r; g += delta*light.g; b += delta*light.b;
-            }
-
-          frag.calccolor = qRgba( clip(int(r*255), 0, 255),
-                                  clip(int(g*255), 0, 255),
-                                  clip(int(b*255), 0, 255),
-                                  clip(int(a*255), 0, 255) );
-          frag.usecalccolor = 1;
+        case Fragment::FR_TRIANGLE:
+          if(frag.surfaceprop != 0)
+            calcLightingTriangle(frag);
+          break;
+        case Fragment::FR_LINESEG:
+          if(frag.lineprop != 0)
+            calcLightingLine(frag);
+          break;
+        default:
+          break;
         }
     }
 }
@@ -376,50 +461,11 @@ void Scene::projectFragments(const Camera& cam)
       f.proj[pi] = calcProjVec(cam.perspM, f.points[pi]);
 }
 
-namespace
-{
-
-  // This is a bit of a hack to avoid problems with the painter's
-  // algorithm. This idea is to just break up lines with a length over
-  // the maximum into pieces smaller than maxlen.
-  void breakLongLines(FragmentVector& fragments, double maxlen)
-  {
-    const double maxlen2 = maxlen*maxlen;
-    const int size = fragments.size();
-    for(int ifrag=0; ifrag<size; ++ifrag)
-      {
-        Fragment& f=fragments[ifrag];
-        if(f.type == Fragment::FR_LINESEG)
-          {
-            const double len2 = (f.points[1]-f.points[0]).rad2();
-            if(len2 > maxlen2)
-              {
-                const int nbits = int(std::sqrt(len2/maxlen2))+1;
-                const Vec3 delta = (f.points[1]-f.points[0])*(1./nbits);
-
-                // set original to be first segment
-                f.points[1] = f.points[0]+delta;
-
-                // add nbits-1 copies for next segments
-                Fragment tempf(f);
-                for(int ic=1; ic<nbits; ++ic)
-                  {
-                    tempf.points[0] = tempf.points[1];
-                    tempf.points[1] += delta;
-                    fragments.push_back(tempf);
-                  }
-              }
-          }
-      }
-  }
-
-} // namespace
-
 void Scene::renderPainters(const Camera& cam)
 {
-  breakLongLines(fragments, 0.25);
-
   calcLighting();
+
+  breakLongLines(fragments, 0.25);
   projectFragments(cam);
 
   // simple painter's algorithm
@@ -560,8 +606,8 @@ void Scene::render_internal(Object* root,
       break;
     }
 
-  // how to transform projected points to screen
-  const Mat3 screenM = scale<=0 ?
+  // how to transform projected points to screen (screenM is member)
+  screenM = scale<=0 ?
     makeScreenM(fragments, x1, y1, x2, y2) :
     makeScreenMFixed(x1, y1, x2, y2, scale);
 

@@ -113,6 +113,47 @@ struct Vec3
   void normalise();
 };
 
+struct Vec2
+{
+%TypeHeaderCode
+#include <mmaths.h>
+%End
+
+  Vec2();
+  Vec2(double, double);
+
+  void set(unsigned, double);
+%MethodCode
+    if(a0 > 1)
+      {
+	sipIsErr = 1;
+	PyErr_SetString(PyExc_ValueError, "Index should be 0<=i<=1");
+      }
+    else
+      sipCpp->operator()(a0) = a1;
+%End
+  double get(unsigned) const;
+%MethodCode
+    if(a0 > 1)
+      {
+	sipIsErr = 1;
+	PyErr_SetString(PyExc_ValueError, "Index should be 0<=i<=1");
+      }
+    else
+      sipRes = sipCpp->operator()(a0);
+%End
+
+  void operator*=(double);
+  Vec2 operator+(const Vec2&) const;
+  Vec2 operator-(const Vec2&) const;
+  Vec2 operator*(double) const;
+  bool operator==(const Vec2&) const;
+  bool operator!=(const Vec2&) const;
+  double rad2() const;
+  double rad() const;
+  void normalise();
+};
+
 struct Mat4
 {
 %TypeHeaderCode
@@ -148,6 +189,7 @@ struct Mat4
 Vec4 operator*(const Vec4& v, const Mat4& o);
 Mat4 identityM4();
 Mat4 rotateM4(double angle, Vec3 vec);
+Mat4 rotate3M4(double ax, double ay, double az);
 Mat4 translationM4(Vec3 vec);
 Mat4 scaleM4(Vec3 scalevec);
 
@@ -221,6 +263,10 @@ public:
   bool empty() const;
 };
 
+Vec3 calcProjVec(const Mat4& projM, const Vec3& v);
+Vec3 calcProjVec(const Mat4& projM, const Vec4& v);
+Vec2 projVecToScreen(const Mat3& screenM, const Vec3& vec);
+
 /////////////////////////////////////////////////
 // Properties
 
@@ -251,6 +297,7 @@ struct LineProp /NoDefaultCtors/
 
   LineProp(double r=0, double g=0, double b=0,
 	   double trans=0,
+           double refl=0,
 	   double width=1,
            bool hide=0,
            Qt::PenStyle style=Qt::SolidLine) /KeywordArgs="All"/;
@@ -261,6 +308,7 @@ struct LineProp /NoDefaultCtors/
   double g;
   double b;
   double trans;
+  double refl;
   double width;
   bool hide;
 };
@@ -495,4 +543,7 @@ class Scene
                double x1, double y1, double x2, double y2,
                double scale,
                double scaling, int x, int y);
+
+ public:
+  Mat3 screenM;
 };

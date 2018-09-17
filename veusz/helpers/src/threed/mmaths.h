@@ -258,6 +258,26 @@ inline Mat4 scaleM4(Vec3 s)
   return m;
 }
 
+// rotation matrix in terms of sin and cos of three angles in x,y,z
+// doing z rotation, then y, then x
+inline Mat4 rotate3M4_cs(double sx, double cx, double sy, double cy,
+                         double sz, double cz)
+{
+  Mat4 m(false);
+  m(0,0)=cy*cz; m(0,1)=cz*sx*sy-cx*sz; m(0,2)=cx*cz*sy+sx*sz; m(0,3)=0;
+  m(1,0)=cy*sz; m(1,1)=cx*cz+sx*sy*sz; m(1,2)=cx*sy*sz-cz*sx; m(1,3)=0;
+  m(2,0)=-sy;   m(2,1)=cy*sx;          m(2,2)=cx*cy;          m(2,3)=0;
+  m(3,0)=0;     m(3,1)=0;              m(3,2)=0;              m(3,3)=1;
+  return m;
+}
+
+inline Mat4 rotate3M4(double ax, double ay, double az)
+{
+  return rotate3M4_cs(std::sin(ax), std::cos(ax),
+                      std::sin(ay), std::cos(ay),
+                      std::sin(az), std::cos(az));
+}
+
 ///////////////////////////////////////////////////////////////////////
 // 3-Matrix
 
@@ -463,6 +483,15 @@ inline Vec3 calcProjVec(const Mat4& projM, const Vec3& v)
   Vec4 nv(projM*vec3to4(v));
   double inv = 1/nv(3);
   return Vec3(nv(0)*inv, nv(1)*inv, nv(2)*inv);
+}
+
+// convert projected coordinates to screen coordinates using screen matrix
+// makes (x,y,depth) -> screen coordinates
+inline Vec2 projVecToScreen(const Mat3& screenM, const Vec3& vec)
+{
+  Vec3 mult(screenM*Vec3(vec(0), vec(1), 1));
+  double inv = 1/mult(2);
+  return Vec2(mult(0)*inv, mult(1)*inv);
 }
 
 // do 2d lines overlap?
