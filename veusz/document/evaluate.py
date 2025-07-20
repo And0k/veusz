@@ -125,7 +125,7 @@ class Evaluate:
         for name, val in N.__dict__.items():
             if ( (callable(val) or type(val)==float) and
                  name not in __builtins__ and
-                 name[:1] != '_' and name[-1:] != '_' ):
+                 name[0] != '_' ):
                 c[name] = val
 
         # safe functions
